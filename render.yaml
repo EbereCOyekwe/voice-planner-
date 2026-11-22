@@ -1,0 +1,17 @@
+# Render Blueprint: one free Node web service.
+# In Render: New > Blueprint > pick this repo. It asks for the two secrets below.
+services:
+  - type: web
+    name: voice-planner
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: INWORLD_API_KEY
+        sync: false
+      - key: APP_PASSCODE
+        sync: false
