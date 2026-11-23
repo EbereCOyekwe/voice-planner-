@@ -146,10 +146,12 @@ async function handleCall(req, res) {
 
   let r;
   try {
+    // Same as Inworld's reference WebRTC example: the body is the raw SDP offer.
+    // The session config is applied afterwards with session.update over the data channel.
     r = await inworld('/v1/realtime/calls', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sdp, session })
+      headers: { 'Content-Type': 'application/sdp' },
+      body: sdp
     });
   } catch (e) {
     console.error(`[call] Inworld request error: ${e.name}`);
@@ -160,7 +162,9 @@ async function handleCall(req, res) {
     // Log only the status and Inworld's short message. Never the key or headers.
     let msg = '';
     try {
-      msg = String((await r.json())?.message || '').slice(0, 200);
+      const t = await r.text();
+      try { msg = String(JSON.parse(t)?.message || ''); } catch { msg = t; }
+      msg = msg.slice(0, 200);
     } catch {}
     console.error(`[call] Inworld rejected the call: HTTP ${r.status} ${msg}`);
     const hint =
@@ -170,9 +174,16 @@ async function handleCall(req, res) {
     return send(res, 502, { error: hint });
   }
 
-  const data = await r.json();
-  if (typeof data?.sdp !== 'string') return send(res, 502, { error: 'Unexpected reply from Inworld' });
-  send(res, 200, { sdp: data.sdp, callId: data.id || null });
+  const raw = await r.text();
+  let answer = raw;
+  let callId = null;
+  if (!raw.trimStart().startsWith('v=0')) {
+    try { const data = JSON.parse(raw); answer = data?.sdp; callId = data?.id || null; } catch { answer = null; }
+  }
+  if (typeof answer !== 'string' || !answer.trimStart().startsWith('v=0')) {
+    return send(res, 502, { error: 'Unexpected reply from Inworld' });
+  }
+  send(res, 200, { sdp: answer, callId, session });
 }
 
 // ---------- static files ----------

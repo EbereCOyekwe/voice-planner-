@@ -16,7 +16,7 @@ before(async () => {
     if (typeof url === 'string' && url.startsWith('https://api.inworld.ai')) {
       upstream.push({ url, init });
       if (url.endsWith('/ice-servers')) return Response.json({ ice_servers: [{ urls: ['stun:example'] }] });
-      if (url.endsWith('/v1/realtime/calls')) return Response.json({ id: 'call_123', sdp: 'v=0\r\nanswer' });
+      if (url.endsWith('/v1/realtime/calls')) return new Response('v=0\r\nanswer', { headers: { 'Content-Type': 'application/sdp' } });
     }
     return realFetch(url, init);
   };
@@ -65,16 +65,18 @@ test('call relays the SDP with the key server-side', async () => {
   });
   const text = await r.text();
   assert.equal(r.status, 200);
-  assert.deepEqual(JSON.parse(text), { sdp: 'v=0\r\nanswer', callId: 'call_123' });
+  const out = JSON.parse(text);
+  assert.equal(out.sdp, 'v=0\r\nanswer');
+  assert.equal(out.session.tools[0].name, 'set_schedule');
+  assert.match(out.session.instructions, /Monday 9:00 AM/);
+  assert.match(out.session.instructions, /10:00-11:00 Client call/);
+  assert.equal(out.session.audio.input.transcription.language, 'en');
   assert.ok(!text.includes('test-key-not-real'));
 
   const sent = upstream.find((u) => u.url.endsWith('/v1/realtime/calls'));
   assert.equal(sent.init.headers.Authorization, 'Basic test-key-not-real');
-  const body = JSON.parse(sent.init.body);
-  assert.equal(body.sdp, 'v=0\r\noffer');
-  assert.equal(body.session.tools[0].name, 'set_schedule');
-  assert.match(body.session.instructions, /Monday 9:00 AM/);
-  assert.match(body.session.instructions, /10:00-11:00 Client call/);
+  assert.equal(sent.init.headers['Content-Type'], 'application/sdp');
+  assert.equal(sent.init.body, 'v=0\r\noffer');
 });
 
 test('call rejects a bad offer', async () => {

@@ -311,6 +311,7 @@ async function startCall() {
       })
     });
     if (call !== thisCall) return;
+    thisCall.session = answer.session || null;
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
     setTimeout(() => {
@@ -327,6 +328,9 @@ async function startCall() {
 
 async function onChannelOpen(thisCall) {
   if (call !== thisCall) return;
+  // Apply the planner's settings (voice, model, instructions, tool, English) first,
+  // exactly like Inworld's reference example does.
+  if (thisCall.session) send({ type: 'session.update', session: thisCall.session });
   setState('listening');
   note('Conversation started');
   try { thisCall.wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
