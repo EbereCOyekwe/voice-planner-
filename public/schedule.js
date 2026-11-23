@@ -99,7 +99,7 @@ export function parseScheduleText(text) {
   }
   const blocks = [];
   for (const line of str.split(/\r?\n|;(?=\s*\d)/)) {
-    const parts = line.replace(/^\s*[-*•]\s*/, '').split('|').map((x) => x.trim());
+    const parts = line.replace(/[*_`]/g, '').replace(/^\s*(?:[-•]|\d{1,2}[.)](?=\s))\s*/, '').split('|').map((x) => x.trim());
     const m = /^(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|–|—|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$/i.exec(parts[0] || '');
     if (!m) continue;
     blocks.push({ start: m[1], end: m[2], title: parts[1] || '', category: (parts[2] || '').toLowerCase(), note: parts[3] || '' });

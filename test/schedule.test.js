@@ -53,3 +53,8 @@ test('parseScheduleText reads one block per line', () => {
   assert.deepEqual(parseScheduleText(''), []);
   assert.equal(parseScheduleText('[{"start":"9:00","end":"10:00","title":"A"}]').length, 1);
 });
+
+test('parseScheduleText tolerates markdown and numbering', () => {
+  const out = parseScheduleText('1. **09:00 - 10:00** | Deep work | work\n2) 10:00–10:30 | Break | break');
+  assert.deepEqual(out.map((b) => [b.start, b.end, b.title]), [['09:00', '10:00', 'Deep work'], ['10:00', '10:30', 'Break']]);
+});

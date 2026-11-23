@@ -373,13 +373,19 @@ async function runPlanBackup() {
       })
     });
     if (thisCall && call !== thisCall) return;
-    if (typeof data.schedule !== 'string' || data.schedule.trim().toUpperCase() === 'NONE') return;
-    const next = parseScheduleText(data.schedule);
-    if (!next.length) return;
+    const text = typeof data.schedule === 'string' ? data.schedule.trim() : '';
+    if (!text || text.toUpperCase() === 'NONE') return;
+    const next = parseScheduleText(text);
+    if (!next.length) {
+      note(`Plan text couldn't be read: ${text.slice(0, 140)}`);
+      return;
+    }
     if (JSON.stringify(next) === JSON.stringify(blocks)) return;
     applySchedule(next);
+    selectTab('plan');
+    toast('Plan updated', 'info', 2500);
   } catch (err) {
-    console.warn('Plan backup failed:', err?.message);
+    toast(`Couldn't update the plan: ${err?.message || 'unknown error'}`, 'error', 10000);
   }
 }
 
@@ -502,7 +508,7 @@ function handleEvent(ev) {
       break;
     case 'response.output_audio_transcript.done':
       aiText(ev.item_id, ev.transcript, 'audio', true);
-      if (ev.transcript) convo.push({ role: 'assistant', text: ev.transcript });
+      if (ev.transcript) { convo.push({ role: 'assistant', text: ev.transcript }); schedulePlanBackup(); }
       break;
     case 'response.output_text.delta':
       aiText(ev.item_id, ev.delta, 'text', false);
@@ -517,7 +523,7 @@ function handleEvent(ev) {
 
     case 'response.done': {
       const r = ev.response || {};
-      if (r.status === 'completed' && !toolCalledThisResponse) schedulePlanBackup();
+      if (r.status !== 'failed' && r.status !== 'cancelled') schedulePlanBackup();
       if (r.status === 'failed' || r.status === 'incomplete') {
         const d = r.status_details || {};
         const why = [d.error?.type, d.error?.code, d.error?.message, d.reason].filter(Boolean).join(' · ') || r.status;
