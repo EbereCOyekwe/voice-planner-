@@ -423,11 +423,19 @@ function handleEvent(ev) {
       handleToolCall(ev);
       break;
 
-    case 'response.done':
+    case 'response.done': {
+      const r = ev.response || {};
+      if (r.status === 'failed' || r.status === 'incomplete') {
+        const d = r.status_details || {};
+        const why = d.error?.message || d.reason || d.error?.code || r.status;
+        toast(`The reply could not be spoken: ${why}`, 'error', 12000);
+        console.warn('Response not completed:', r.status, d);
+      }
       if (!sawAudioBufferEvents && (state === 'thinking' || state === 'speaking')) {
         setTimeout(() => { if (call && (state === 'thinking' || state === 'speaking')) setState('listening'); }, 700);
       }
       break;
+    }
 
     case 'error': {
       const code = ev.error?.code || '';
@@ -437,6 +445,7 @@ function handleEvent(ev) {
         toast('The session expired. Tap Start to continue.');
       } else if (code !== 'conversation_already_has_active_response' && code !== 'response_cancel_not_active') {
         console.warn('Realtime error:', code, message);
+        toast(`Inworld error: ${message}${code ? ` (${code})` : ''}`, 'error', 12000);
       }
       break;
     }
