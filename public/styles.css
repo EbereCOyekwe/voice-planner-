@@ -99,6 +99,33 @@ button:disabled { cursor: default; opacity: 0.45; }
 .app[data-state="speaking"] .core { box-shadow: 0 0 0 1px rgba(156,195,255,.25) inset, 0 0 50px 4px var(--blue-glow); }
 
 .status { margin: 12px 0 0; font-size: 15px; font-weight: 600; }
+
+/* "Plan is speaking" indicator. Shown when voice audio is actually arriving (data-voice="on"),
+   or when Inworld reports it is speaking. Bars follow the real loudness of the voice (--lvl). */
+.app { --lvl: 0; }
+.speaking-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding: 6px 12px; border-radius: 999px;
+  background: rgba(47, 123, 255, 0.16); border: 1px solid #1d3566; color: var(--blue-3);
+  font-size: 13px; font-weight: 600;
+  opacity: 0; transform: translateY(-4px) scale(0.96); pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.app[data-voice="on"] .speaking-pill,
+.app[data-state="speaking"] .speaking-pill { opacity: 1; transform: none; }
+.speaking-pill .eq { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.speaking-pill .eq i { width: 3px; border-radius: 2px; background: currentColor; height: calc(3px + var(--lvl) * 11px); transition: height .08s linear; }
+.speaking-pill .eq i:nth-child(2) { height: calc(3px + var(--lvl) * 14px); }
+.speaking-pill .eq i:nth-child(3) { height: calc(3px + var(--lvl) * 9px); }
+.speaking-pill .eq i:nth-child(4) { height: calc(3px + var(--lvl) * 12px); }
+/* While real audio is arriving, the orb shows bars that move with the voice. */
+.app[data-voice="on"] .icon-mic, .app[data-voice="on"] .dots { display: none; }
+.app[data-voice="on"] .bars { display: flex; }
+.app[data-voice="on"] .bars i { animation: none; height: calc(8px + var(--lvl) * 30px); transition: height .08s linear; }
+.app[data-voice="on"] .bars i:nth-child(2), .app[data-voice="on"] .bars i:nth-child(4) { height: calc(8px + var(--lvl) * 22px); }
+.app[data-voice="on"] .bars i:nth-child(1), .app[data-voice="on"] .bars i:nth-child(5) { height: calc(6px + var(--lvl) * 12px); }
+.app[data-voice="on"] .core { box-shadow: 0 0 0 1px rgba(156,195,255,.25) inset, 0 0 50px 4px var(--blue-glow); }
+@media (prefers-reduced-motion: reduce) { .speaking-pill .eq i, .app[data-voice="on"] .bars i { transition: none; } }
 .caption {
   margin: 4px 0 0; min-height: 40px; max-width: 100%;
   color: var(--muted); font-size: 14px; text-align: center; line-height: 1.4;

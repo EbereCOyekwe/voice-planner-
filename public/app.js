@@ -256,7 +256,10 @@ async function startCall() {
   audio.playsInline = true;
   audio.setAttribute('playsinline', '');
   document.body.append(audio);
-  call = { pc: null, dc: null, mic: null, audio, wakeLock: null };
+  // Audio context for the speaking meter. Created inside the tap so mobile browsers allow it.
+  let meterCtx = null;
+  try { meterCtx = new (window.AudioContext || window.webkitAudioContext)(); meterCtx.resume?.(); } catch {}
+  call = { pc: null, dc: null, mic: null, audio, wakeLock: null, meterCtx, meterRaf: 0 };
   const thisCall = call;
 
   try {
@@ -282,6 +285,7 @@ async function startCall() {
     pc.ontrack = (e) => {
       audio.srcObject = e.streams[0] || new MediaStream([e.track]);
       audio.play().catch(() => toast('Tap anywhere to turn on the sound.', 'info'));
+      startSpeakingMeter(thisCall, audio.srcObject);
     };
     pc.onconnectionstatechange = () => {
       if (call !== thisCall) return;
@@ -339,10 +343,55 @@ async function onChannelOpen(thisCall) {
   send({ type: 'response.create' });
 }
 
+// ---------- speaking meter ----------
+// Measures how loud the assistant's incoming voice is, so the screen shows
+// "Plan is speaking" exactly when voice audio is arriving from Inworld.
+
+function setVoice(on, level) {
+  if (on) app.dataset.voice = 'on'; else delete app.dataset.voice;
+  app.style.setProperty('--lvl', level.toFixed(3));
+}
+
+function startSpeakingMeter(thisCall, stream) {
+  const ctx = thisCall.meterCtx;
+  if (!ctx || !stream || thisCall.meterRaf) return;
+  let analyser;
+  try {
+    const src = ctx.createMediaStreamSource(stream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser); // analysis only: playback stays on the <audio> element
+  } catch { return; }
+  const buf = new Uint8Array(analyser.fftSize);
+  let smooth = 0;
+  let lastLoud = 0;
+  let wasOn = false;
+  const tick = () => {
+    if (call !== thisCall) return;
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+    const rms = Math.sqrt(sum / buf.length);
+    const now = performance.now();
+    if (rms > 0.015) lastLoud = now;
+    const on = now - lastLoud < 400; // short hold so it doesn't flicker between words
+    smooth += (Math.min(1, rms * 5) - smooth) * 0.35;
+    setVoice(on, on ? smooth : 0);
+    if (on && !wasOn && state !== 'hearing' && state !== 'speaking') setState('speaking');
+    wasOn = on;
+    thisCall.meterRaf = requestAnimationFrame(tick);
+  };
+  ctx.resume?.().catch(() => {});
+  thisCall.meterRaf = requestAnimationFrame(tick);
+}
+
 function endCall() {
   const c = call;
   call = null;
+  setVoice(false, 0);
   if (c) {
+    if (c.meterRaf) cancelAnimationFrame(c.meterRaf);
+    c.meterCtx?.close?.().catch(() => {});
     try { c.dc?.close(); } catch {}
     try { c.pc?.close(); } catch {}
     c.mic?.getTracks().forEach((t) => t.stop());
