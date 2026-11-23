@@ -9,7 +9,8 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { buildSession } from './lib/session-config.js';
+import { buildSession, FALLBACK_MODELS } from './lib/session-config.js';
+const VERSION = (process.env.RENDER_GIT_COMMIT || 'dev').slice(0, 7);
 
 const INWORLD = 'https://api.inworld.ai';
 const API_KEY = (process.env.INWORLD_API_KEY || '').trim();
@@ -183,7 +184,7 @@ async function handleCall(req, res) {
   if (typeof answer !== 'string' || !answer.trimStart().startsWith('v=0')) {
     return send(res, 502, { error: 'Unexpected reply from Inworld' });
   }
-  send(res, 200, { sdp: answer, callId, session });
+  send(res, 200, { sdp: answer, callId, session, fallbackModels: FALLBACK_MODELS });
 }
 
 // ---------- static files ----------
@@ -226,7 +227,7 @@ export const server = createServer(async (req, res) => {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   const path = (req.url || '/').split('?')[0];
   try {
-    if (path === '/healthz') return send(res, 200, { ok: true });
+    if (path === '/healthz') return send(res, 200, { ok: true, version: VERSION });
     if (path.startsWith('/api/')) {
       if (!sameOrigin(req)) return send(res, 403, { error: 'Forbidden' });
       if (!API_KEY) return send(res, 500, { error: 'Server is missing INWORLD_API_KEY' });

@@ -312,6 +312,7 @@ async function startCall() {
     });
     if (call !== thisCall) return;
     thisCall.session = answer.session || null;
+    thisCall.fallbacks = Array.isArray(answer.fallbackModels) ? answer.fallbackModels.slice() : [];
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
     setTimeout(() => {
@@ -345,6 +346,21 @@ async function onChannelOpen(thisCall) {
     }
   });
   send({ type: 'response.create' });
+}
+
+// ---------- backup model ----------
+// If Inworld fails to produce a reply with the main AI model, switch the live
+// session to the next backup model and ask for the reply again.
+function tryFallbackModel() {
+  const c = call;
+  if (!c?.session || !c.fallbacks?.length) return false;
+  const next = c.fallbacks.shift();
+  c.session = { ...c.session, model: next };
+  send({ type: 'session.update', session: c.session });
+  send({ type: 'response.create' });
+  note(`Switched AI model to ${next}`);
+  toast(`Retrying with backup model ${next}…`, 'info', 5000);
+  return true;
 }
 
 // ---------- speaking meter ----------
@@ -480,9 +496,11 @@ function handleEvent(ev) {
       const r = ev.response || {};
       if (r.status === 'failed' || r.status === 'incomplete') {
         const d = r.status_details || {};
-        const why = d.error?.message || d.reason || d.error?.code || r.status;
+        const errType = d.error?.type || '';
+        const why = [d.error?.type, d.error?.code, d.error?.message, d.reason].filter(Boolean).join(' · ') || r.status;
+        console.warn('Response not completed:', r.status, JSON.stringify(d));
+        if (errType === 'server_error' && tryFallbackModel()) break;
         toast(`The reply could not be spoken: ${why}`, 'error', 12000);
-        console.warn('Response not completed:', r.status, d);
       }
       if (!sawAudioBufferEvents && (state === 'thinking' || state === 'speaking')) {
         setTimeout(() => { if (call && (state === 'thinking' || state === 'speaking')) setState('listening'); }, 700);
@@ -536,6 +554,11 @@ function handleToolCall(ev) {
   // Inworld continues the conversation automatically after this result (auto_tool_response).
   send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: ev.call_id, output: JSON.stringify(output) } });
 }
+
+// ---------- version tag (shows which deploy is live) ----------
+fetch('/healthz', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+  if (d?.version) els.today.textContent += ` · v${d.version}`;
+}).catch(() => {});
 
 // ---------- wiring ----------
 
