@@ -36,6 +36,9 @@ let blocks = [];
 let unseen = 0;
 let sawAudioBufferEvents = false;
 const bubbles = new Map(); // item_id -> element
+const convo = []; // [{ role: 'user' | 'assistant', text }] for the plan backup
+let toolCalledThisResponse = false;
+let planTimer = 0;
 const bubbleSource = new Map(); // item_id -> 'audio' | 'text'
 
 // ---------- storage (per-device convenience only) ----------
@@ -312,7 +315,6 @@ async function startCall() {
     });
     if (call !== thisCall) return;
     thisCall.session = answer.session || null;
-    thisCall.fallbacks = buildFallbacks(thisCall.session, answer.fallbackModels);
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
     setTimeout(() => {
@@ -348,38 +350,37 @@ async function onChannelOpen(thisCall) {
   send({ type: 'response.create' });
 }
 
-// ---------- backup setups ----------
-// If Inworld fails to produce a reply, step through simpler session setups
-// (backup AI model, then without the schedule tool, then minimal instructions)
-// until one works. The transcript notes which setup is in use.
-const SIMPLE_INSTRUCTIONS =
-  'You are Plan, a friendly voice assistant that helps the user plan their day. Keep replies to one to three short sentences. Say times the way people speak them.';
-
-function buildFallbacks(session, models) {
-  if (!session) return [];
-  const list = [];
-  const backups = Array.isArray(models) ? models : [];
-  for (const m of backups) list.push({ label: `backup AI model ${m}`, session: { ...session, model: m } });
-  const noTool = { ...session, tools: [] };
-  list.push({ label: 'main AI model without the schedule tool', session: noTool });
-  for (const m of backups) list.push({ label: `${m} without the schedule tool`, session: { ...noTool, model: m } });
-  list.push({ label: 'minimal setup', session: { ...noTool, instructions: SIMPLE_INSTRUCTIONS } });
-  if (backups[0]) list.push({ label: `minimal setup on ${backups[0]}`, session: { ...noTool, instructions: SIMPLE_INSTRUCTIONS, model: backups[0] } });
-  return list;
+// ---------- plan backup ----------
+// The voice model is asked to call set_schedule, but it doesn't always do it.
+// After any reply without that call, the server reads the conversation and
+// writes out the plan, so the Plan tab always matches what was said.
+function schedulePlanBackup() {
+  if (!convo.some((m) => m.role === 'user')) return;
+  clearTimeout(planTimer);
+  planTimer = setTimeout(runPlanBackup, 800);
 }
 
-function tryFallbackModel(why) {
-  const c = call;
-  if (!c?.fallbacks?.length) return false;
-  const next = c.fallbacks.shift();
-  c.session = next.session;
-  c.activeLabel = next.label;
-  c.reportedOk = false;
-  send({ type: 'session.update', session: c.session });
-  send({ type: 'response.create' });
-  note(`Reply failed (${why}). Trying: ${next.label}`);
-  toast(`Retrying with ${next.label}…`, 'info', 5000);
-  return true;
+async function runPlanBackup() {
+  const thisCall = call;
+  try {
+    const data = await api('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation: convo.slice(-30),
+        schedule: blocks,
+        localTime: new Date().toLocaleString(undefined, { weekday: 'long', hour: 'numeric', minute: '2-digit' })
+      })
+    });
+    if (thisCall && call !== thisCall) return;
+    if (typeof data.schedule !== 'string' || data.schedule.trim().toUpperCase() === 'NONE') return;
+    const next = parseScheduleText(data.schedule);
+    if (!next.length) return;
+    if (JSON.stringify(next) === JSON.stringify(blocks)) return;
+    applySchedule(next);
+  } catch (err) {
+    console.warn('Plan backup failed:', err?.message);
+  }
 }
 
 // ---------- speaking meter ----------
@@ -476,11 +477,13 @@ function handleEvent(ev) {
       const text = (ev.transcript || '').trim();
       if (!text) { el.remove(); bubbles.delete(ev.item_id); break; }
       setBubbleText(el, text, true);
+      convo.push({ role: 'user', text });
       if (state !== 'speaking') setCaption(text);
       break;
     }
 
     case 'response.created':
+      toolCalledThisResponse = false;
       if (state !== 'hearing') setState('thinking');
       break;
 
@@ -499,6 +502,7 @@ function handleEvent(ev) {
       break;
     case 'response.output_audio_transcript.done':
       aiText(ev.item_id, ev.transcript, 'audio', true);
+      if (ev.transcript) convo.push({ role: 'assistant', text: ev.transcript });
       break;
     case 'response.output_text.delta':
       aiText(ev.item_id, ev.delta, 'text', false);
@@ -513,15 +517,11 @@ function handleEvent(ev) {
 
     case 'response.done': {
       const r = ev.response || {};
-      if (r.status === 'completed' && call?.activeLabel && !call.reportedOk) {
-        call.reportedOk = true;
-        note(`It worked with: ${call.activeLabel}`);
-      }
+      if (r.status === 'completed' && !toolCalledThisResponse) schedulePlanBackup();
       if (r.status === 'failed' || r.status === 'incomplete') {
         const d = r.status_details || {};
         const why = [d.error?.type, d.error?.code, d.error?.message, d.reason].filter(Boolean).join(' · ') || r.status;
         console.warn('Response not completed:', r.status, JSON.stringify(d));
-        if (r.status === 'failed' && tryFallbackModel(why)) break;
         toast(`The reply could not be spoken: ${why}`, 'error', 12000);
       }
       if (!sawAudioBufferEvents && (state === 'thinking' || state === 'speaking')) {
@@ -565,6 +565,7 @@ function aiText(itemId, chunk, source, done) {
 function handleToolCall(ev) {
   let output;
   if (ev.name === 'set_schedule') {
+    toolCalledThisResponse = true;
     let args = {};
     try { args = JSON.parse(ev.arguments || '{}'); } catch {}
     const next = args.schedule !== undefined ? parseScheduleText(args.schedule) : sanitizeBlocks(args.blocks);

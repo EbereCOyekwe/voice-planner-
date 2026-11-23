@@ -186,7 +186,56 @@ async function handleCall(req, res) {
   if (typeof answer !== 'string' || !answer.trimStart().startsWith('v=0')) {
     return send(res, 502, { error: 'Unexpected reply from Inworld' });
   }
-  send(res, 200, { sdp: answer, callId, session, fallbackModels: FALLBACK_MODELS });
+  send(res, 200, { sdp: answer, callId, session });
+}
+
+// ---------- plan backup: turns the conversation into schedule lines ----------
+
+async function handlePlan(req, res) {
+  if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
+  if (rateLimited(req, 'plan', 30, 60_000)) return send(res, 429, { error: 'Too many requests' });
+  if (!passcodeOk(req)) return send(res, 401, { error: 'passcode_required' });
+  let body;
+  try { body = await readJson(req); } catch (e) { return send(res, e.status || 400, { error: 'Invalid request' }); }
+  const convo = Array.isArray(body?.conversation) ? body.conversation.slice(-30) : [];
+  const lines = convo
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string')
+    .map((m) => `${m.role === 'user' ? 'User' : 'Planner'}: ${m.text.slice(0, 600)}`);
+  if (!lines.length) return send(res, 200, { schedule: 'NONE' });
+  const current = (Array.isArray(body?.schedule) ? body.schedule.slice(0, 40) : [])
+    .map((b) => `${String(b?.start).slice(0, 5)}-${String(b?.end).slice(0, 5)} | ${String(b?.title).slice(0, 80)} | ${String(b?.category || 'other').slice(0, 12)}`)
+    .join('\n') || '(empty)';
+  const localTime = typeof body?.localTime === 'string' ? body.localTime.slice(0, 60) : 'unknown';
+  const prompt = `You turn a voice conversation about planning a day into the day's schedule.
+Current local time: ${localTime}
+Schedule currently on screen:
+${current}
+
+Conversation:
+${lines.join('\n')}
+
+Write the COMPLETE schedule as agreed so far, reflecting every change in the conversation. One block per line, in time order, exactly in this format:
+HH:MM-HH:MM | title | category | optional note
+Use 24-hour times. category is one of: work, meeting, health, personal, break, errand, other.
+If no schedule has been discussed yet, reply with exactly: NONE
+Reply with the lines only, nothing else.`;
+  try {
+    const r = await inworld('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: MAIN_MODEL, messages: [{ role: 'user', content: prompt }], max_tokens: 600, temperature: 0 })
+    });
+    if (!r.ok) {
+      console.error(`[plan] Inworld chat failed: HTTP ${r.status}`);
+      return send(res, 502, { error: 'Could not build the plan' });
+    }
+    const data = await r.json();
+    const text = String(data?.choices?.[0]?.message?.content || 'NONE').trim().replace(/^```[a-z]*\n?|```$/g, '').trim();
+    send(res, 200, { schedule: text.slice(0, 4000) });
+  } catch (e) {
+    console.error(`[plan] error: ${e.name}`);
+    send(res, 502, { error: 'Could not build the plan' });
+  }
 }
 
 // ---------- self-test: checks the key against Inworld directly ----------
@@ -276,6 +325,7 @@ export const server = createServer(async (req, res) => {
       if (!API_KEY) return send(res, 500, { error: 'Server is missing INWORLD_API_KEY' });
       if (path === '/api/config') return await handleConfig(req, res);
       if (path === '/api/call') return await handleCall(req, res);
+      if (path === '/api/plan') return await handlePlan(req, res);
       return send(res, 404, { error: 'Not found' });
     }
     return await serveStatic(req, res);

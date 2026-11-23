@@ -16,6 +16,7 @@ before(async () => {
     if (typeof url === 'string' && url.startsWith('https://api.inworld.ai')) {
       upstream.push({ url, init });
       if (url.endsWith('/ice-servers')) return Response.json({ ice_servers: [{ urls: ['stun:example'] }] });
+      if (url.endsWith('/v1/chat/completions')) return Response.json({ choices: [{ message: { content: '10:00-11:00 | Client call | meeting\n18:00-19:00 | Gym | health' } }] });
       if (url.endsWith('/v1/realtime/calls')) return new Response('v=0\r\nanswer', { headers: { 'Content-Type': 'application/sdp' } });
     }
     return realFetch(url, init);
@@ -95,4 +96,19 @@ test('session config matches the documented shape', () => {
   assert.equal(s.audio.input.turn_detection.type, 'semantic_vad');
   assert.equal(s.audio.input.turn_detection.interrupt_response, true);
   assert.equal(s.audio.output.model, 'inworld-tts-2');
+});
+
+test('plan backup turns the conversation into schedule lines', async () => {
+  upstream.length = 0;
+  const r = await call('/api/plan', {
+    method: 'POST',
+    headers: { 'X-Passcode': 'letmein', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversation: [{ role: 'user', text: 'Client call at 10, gym at 6pm' }], schedule: [] })
+  });
+  assert.equal(r.status, 200);
+  const out = await r.json();
+  assert.match(out.schedule, /10:00-11:00 \| Client call/);
+  const sent = upstream.find((u) => u.url.endsWith('/v1/chat/completions'));
+  assert.equal(sent.init.headers.Authorization, 'Basic test-key-not-real');
+  assert.match(JSON.parse(sent.init.body).messages[0].content, /Client call at 10/);
 });
