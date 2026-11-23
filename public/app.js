@@ -5,7 +5,7 @@
 //   - JSON events (transcripts, tool calls, status) travel on the "oai-events" data channel.
 // The API key never touches this file: our server performs the handshake with Inworld.
 
-import { sanitizeBlocks, formatTime, formatDuration, changedKeys, toMinutes } from './schedule.js';
+import { sanitizeBlocks, parseScheduleText, formatTime, formatDuration, changedKeys, toMinutes } from './schedule.js';
 
 const $ = (id) => document.getElementById(id);
 const app = document.querySelector('.app');
@@ -527,7 +527,7 @@ function handleToolCall(ev) {
   if (ev.name === 'set_schedule') {
     let args = {};
     try { args = JSON.parse(ev.arguments || '{}'); } catch {}
-    const next = sanitizeBlocks(args.blocks);
+    const next = args.schedule !== undefined ? parseScheduleText(args.schedule) : sanitizeBlocks(args.blocks);
     applySchedule(next);
     output = { ok: true, blocks_on_screen: next.length };
   } else {

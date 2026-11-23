@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeTime, sanitizeBlocks, formatTime, formatDuration, changedKeys } from '../public/schedule.js';
+import { normalizeTime, sanitizeBlocks, parseScheduleText, formatTime, formatDuration, changedKeys } from '../public/schedule.js';
 
 test('normalizeTime handles common spoken/written formats', () => {
   assert.equal(normalizeTime('9:00'), '09:00');
@@ -40,4 +40,16 @@ test('changedKeys flags new and moved blocks only', () => {
   const prev = [{ start: '09:00', end: '10:00', title: 'Gym' }, { start: '10:00', end: '11:00', title: 'Call' }];
   const next = [{ start: '07:00', end: '08:00', title: 'Gym' }, { start: '10:00', end: '11:00', title: 'Call' }, { start: '12:00', end: '13:00', title: 'Lunch' }];
   assert.deepEqual([...changedKeys(prev, next)].sort(), ['gym', 'lunch']);
+});
+
+test('parseScheduleText reads one block per line', () => {
+  const out = parseScheduleText('10:00-10:45 | Client call | meeting\n09:00-10:00 | Deep work | work | proposal draft\n- 18:00-19:00 | Gym | health\nnot a block');
+  assert.deepEqual(out.map((b) => [b.start, b.end, b.title, b.category]), [
+    ['09:00', '10:00', 'Deep work', 'work'],
+    ['10:00', '10:45', 'Client call', 'meeting'],
+    ['18:00', '19:00', 'Gym', 'health']
+  ]);
+  assert.equal(out[0].note, 'proposal draft');
+  assert.deepEqual(parseScheduleText(''), []);
+  assert.equal(parseScheduleText('[{"start":"9:00","end":"10:00","title":"A"}]').length, 1);
 });
