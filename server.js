@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { buildSession, FALLBACK_MODELS } from './lib/session-config.js';
+import { buildSession, FALLBACK_MODELS, MODEL as MAIN_MODEL, VOICE as MAIN_VOICE, TTS_MODEL as MAIN_TTS } from './lib/session-config.js';
 const VERSION = (process.env.RENDER_GIT_COMMIT || 'dev').slice(0, 7);
 
 const INWORLD = 'https://api.inworld.ai';
@@ -81,7 +81,9 @@ function sameOrigin(req) {
 
 function passcodeOk(req) {
   if (!PASSCODE) return true;
-  const given = Buffer.from(String(req.headers['x-passcode'] || ''));
+  let q = '';
+  try { q = new URL(req.url, 'http://x').searchParams.get('passcode') || ''; } catch {}
+  const given = Buffer.from(String(req.headers['x-passcode'] || q));
   const want = Buffer.from(PASSCODE);
   return given.length === want.length && timingSafeEqual(given, want);
 }
@@ -187,6 +189,46 @@ async function handleCall(req, res) {
   send(res, 200, { sdp: answer, callId, session, fallbackModels: FALLBACK_MODELS });
 }
 
+// ---------- self-test: checks the key against Inworld directly ----------
+// Open /selftest?passcode=YOUR_PASSCODE on your phone. Shows each check's result.
+
+async function check(label, path, body) {
+  const t0 = Date.now();
+  try {
+    const r = await inworld(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const text = await r.text();
+    let detail = '';
+    if (!r.ok) {
+      try { const j = JSON.parse(text); detail = j?.error?.message || j?.message || text; } catch { detail = text; }
+    } else if (path.includes('chat')) {
+      try { detail = 'Reply: ' + (JSON.parse(text)?.choices?.[0]?.message?.content || ''); } catch {}
+    } else {
+      detail = 'Audio received';
+    }
+    return { label, ok: r.ok, status: r.status, ms: Date.now() - t0, detail: String(detail).replace(API_KEY, '[key]').slice(0, 300) };
+  } catch (e) {
+    return { label, ok: false, status: 0, ms: Date.now() - t0, detail: `Request failed: ${e.name}` };
+  }
+}
+
+async function handleSelfTest(req, res) {
+  if (!passcodeOk(req)) {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end('<p style="font:18px system-ui;padding:20px">Add <b>?passcode=YOUR_PASSCODE</b> to the end of the address.</p>');
+  }
+  const chat = (model) => ({ model, messages: [{ role: 'user', content: 'Say hi in three words.' }], max_tokens: 20 });
+  const results = await Promise.all([
+    check(`AI model ${MAIN_MODEL}`, '/v1/chat/completions', chat(MAIN_MODEL)),
+    ...FALLBACK_MODELS.map((m) => check(`AI model ${m}`, '/v1/chat/completions', chat(m))),
+    check(`Voice ${MAIN_VOICE} on ${MAIN_TTS}`, '/tts/v1/voice', { text: 'Hi there.', voiceId: MAIN_VOICE, modelId: MAIN_TTS })
+  ]);
+  const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const rows = results.map((r) => `<div style="padding:14px;margin:10px 0;border-radius:12px;background:${r.ok ? '#0f2a1c' : '#2a0f16'}">
+    <b>${r.ok ? '✅' : '❌'} ${esc(r.label)}</b><br><small>HTTP ${r.status} · ${r.ms} ms</small><br>${esc(r.detail)}</div>`).join('');
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#05070d;color:#e8eefc;font:16px system-ui;padding:16px"><h2>Inworld self-test · v${VERSION}</h2>${rows}</body>`);
+}
+
 // ---------- static files ----------
 
 async function serveStatic(req, res) {
@@ -228,6 +270,7 @@ export const server = createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];
   try {
     if (path === '/healthz') return send(res, 200, { ok: true, version: VERSION });
+    if (path === '/selftest') return await handleSelfTest(req, res);
     if (path.startsWith('/api/')) {
       if (!sameOrigin(req)) return send(res, 403, { error: 'Forbidden' });
       if (!API_KEY) return send(res, 500, { error: 'Server is missing INWORLD_API_KEY' });
