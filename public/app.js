@@ -312,7 +312,7 @@ async function startCall() {
     });
     if (call !== thisCall) return;
     thisCall.session = answer.session || null;
-    thisCall.fallbacks = Array.isArray(answer.fallbackModels) ? answer.fallbackModels.slice() : [];
+    thisCall.fallbacks = buildFallbacks(thisCall.session, answer.fallbackModels);
     await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
 
     setTimeout(() => {
@@ -348,18 +348,37 @@ async function onChannelOpen(thisCall) {
   send({ type: 'response.create' });
 }
 
-// ---------- backup model ----------
-// If Inworld fails to produce a reply with the main AI model, switch the live
-// session to the next backup model and ask for the reply again.
-function tryFallbackModel() {
+// ---------- backup setups ----------
+// If Inworld fails to produce a reply, step through simpler session setups
+// (backup AI model, then without the schedule tool, then minimal instructions)
+// until one works. The transcript notes which setup is in use.
+const SIMPLE_INSTRUCTIONS =
+  'You are Plan, a friendly voice assistant that helps the user plan their day. Keep replies to one to three short sentences. Say times the way people speak them.';
+
+function buildFallbacks(session, models) {
+  if (!session) return [];
+  const list = [];
+  const backups = Array.isArray(models) ? models : [];
+  for (const m of backups) list.push({ label: `backup AI model ${m}`, session: { ...session, model: m } });
+  const noTool = { ...session, tools: [] };
+  list.push({ label: 'main AI model without the schedule tool', session: noTool });
+  for (const m of backups) list.push({ label: `${m} without the schedule tool`, session: { ...noTool, model: m } });
+  list.push({ label: 'minimal setup', session: { ...noTool, instructions: SIMPLE_INSTRUCTIONS } });
+  if (backups[0]) list.push({ label: `minimal setup on ${backups[0]}`, session: { ...noTool, instructions: SIMPLE_INSTRUCTIONS, model: backups[0] } });
+  return list;
+}
+
+function tryFallbackModel(why) {
   const c = call;
-  if (!c?.session || !c.fallbacks?.length) return false;
+  if (!c?.fallbacks?.length) return false;
   const next = c.fallbacks.shift();
-  c.session = { ...c.session, model: next };
+  c.session = next.session;
+  c.activeLabel = next.label;
+  c.reportedOk = false;
   send({ type: 'session.update', session: c.session });
   send({ type: 'response.create' });
-  note(`Switched AI model to ${next}`);
-  toast(`Retrying with backup model ${next}…`, 'info', 5000);
+  note(`Reply failed (${why}). Trying: ${next.label}`);
+  toast(`Retrying with ${next.label}…`, 'info', 5000);
   return true;
 }
 
@@ -494,12 +513,15 @@ function handleEvent(ev) {
 
     case 'response.done': {
       const r = ev.response || {};
+      if (r.status === 'completed' && call?.activeLabel && !call.reportedOk) {
+        call.reportedOk = true;
+        note(`It worked with: ${call.activeLabel}`);
+      }
       if (r.status === 'failed' || r.status === 'incomplete') {
         const d = r.status_details || {};
-        const errType = d.error?.type || '';
         const why = [d.error?.type, d.error?.code, d.error?.message, d.reason].filter(Boolean).join(' · ') || r.status;
         console.warn('Response not completed:', r.status, JSON.stringify(d));
-        if (errType === 'server_error' && tryFallbackModel()) break;
+        if (r.status === 'failed' && tryFallbackModel(why)) break;
         toast(`The reply could not be spoken: ${why}`, 'error', 12000);
       }
       if (!sawAudioBufferEvents && (state === 'thinking' || state === 'speaking')) {
